@@ -1,0 +1,297 @@
+---
+title: "Examining US Post-Secondary Institution Characteristics on 4-Year Graduation Rate."
+author: "Oluwatomi Hassan"
+date: '2022-08-04'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(odbc)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Amelia)
+library(broom)
+library(car)
+library(ggcorrplot)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### Non-Technical Summary 
+The 2020 Integrated Post secondary Education Data System(IPEDS) survey response is used to examine what institutional characteristics(student services, enrollment status, accelerated program, open admission, library resources, tuition plans, varied tuition rate for in or out-of state students, application fee, and member of National Athletic association) are associated with higher or lower undergraduate graduation rate. Part-time enrollment is associated with about 9% lower graduation rate on average for institutions with the same characteristics. For institutions with the same characteristics, Open admission is correlated with an average of 6% lower graduation rate. For every ten dollar increase in application fee, there is 1.4% increase in graduation rate after accounting for the other characteristics. Institutions that have different tuition cost for in-state vs out-of-state residents have a decrease of 10% on average when compared to institutions with the same characteristics. When compared to institutions with the same resources, there is an average increase of 4% and 7% in graduation rate for institutions with student access to collections from other institution and established library hours, respectively. Institution with student access to employment services for students and placement services for graduates is associated with a 5% and 6% increase in graduation rate on average after accounting for other characteristics. However, for institutions with the same characteristics, those that provide remedial services and academic/career counseling services are associated with 10% and 6% lower graduation rate on average. For institutions that accept credits for life experiences, graduatation rate are about 3% lower on average that those that do not after accounting for other factors. Although, there is some association of higher graduation rate(~2%) between institutions that accept Advanced placement(AP) credits and those that do not. On average, institutions that offer distanced education programs saw on average a 4% decrease in undergraduate graduation rate. While this study suggest institutional characteristics that are associated with graduation rate, this findings does not have any casual implications. 
+
+## Body 
+
+### Data
+
+The data in this study consists of the 2020 Integrated Post secondary Education Data System(IPEDS) institutional characteristics survey response and the outcome measures survey response. The institutional characteristics are  information on US colleges, university, technical and vocational institution that participates in the federal student financial aid programs and the outcome measures are reported outcomes of degree/certificate-seeking undergraduates including part-time attending and transfer students. Institutions that do not award degrees, diploma or certificates were excluded from this study. This goal of this study is to find what institutional characteristics are associated with four year graduation rate. The variable of interest were selected based on the scope of the question and to minimize collinearity in the model.
+
+```{r outcome metrics dataset, echo=FALSE}
+# reading IPEDS outcome metrics dataset
+outcome_df <- read.csv("om2020.csv")
+head(outcome_df)
+```
+
+```{r, echo=FALSE}
+# 4 year grad rate for all degree/certificate seeking undergraduates
+grad_rate4y <- filter(outcome_df, OMCHRT==50)
+head(grad_rate4y)
+```
+
+```{r characteristic dataset, echo =FALSE}
+# reading institutional characteristics dataset
+char_df <- read.csv("ic2020.csv")
+head(char_df)
+```
+
+```{r, include=FALSE}
+# excluding non-degree, certificate or award granting institution 
+pop_interest <- filter(char_df, (PEO1ISTR==1 | PEO2ISTR==1), (LEVEL3==1|LEVEL4==1|LEVEL5==1))
+head(pop_interest)
+```
+
+```{r, include=FALSE}
+# extracting possible variable of interest
+char_var <- select(pop_interest, UNITID, PT_UG,OPENADMP,TUITPL,APPLFEEU, TUITVARY, ATHASSOC, starts_with("STUSRV"), starts_with("LIBRE"), starts_with("CREDIT"),starts_with("DSTNUG"))
+```
+
+```{r odbc func, echo=FALSE}
+# connecting to MS SQL 
+con <- dbConnect(odbc(), Driver = "SQL Server", Server = "LAPTOP-BFPVJ531\\SQLEXPRESS",trusted_connection = "yes")
+```
+
+```{r}
+# creating outcome metrics database
+dbWriteTable(con, "ipeds_gradrate4y", grad_rate4y)
+```
+
+```{r}
+# creating institutional characteristics database
+dbWriteTable(con, "ipeds_ic", char_var)
+```
+
+```{sql, connection = con}
+ALTER TABLE ipeds_ic ALTER COLUMN unitid INT NOT NULL
+```
+
+```{sql, connection = con}
+ALTER TABLE ipeds_ic ADD CONSTRAINT PK_ics_unitid PRIMARY KEY (UNITID)
+```
+```{sql, connection = con}
+ALTER TABLE ipeds_ic ADD grad_rate INT
+```
+
+
+```{sql, connection = con}
+UPDATE ipeds_ic 
+SET grad_rate = (SELECT OMAWDP4
+FROM ipeds_gradrate4y
+WHERE ipeds_ic.UNITID = ipeds_gradrate4y.UNITID)
+```
+
+```{sql, connection=con, output.var="data"}
+SELECT * FROM ipeds_ic
+```
+### Question of Interest
+Consider the following question: Are these institutional factors(student services, enrollment status, accelerated program, open admission, library resources, tuition plans, varied tuition rate for in or out-of state students, application fee, and member of National Athletic association) correlated with undergraduate four year graduation rate? 
+
+```{r, echo=FALSE}
+head(data)
+```
+```{r}
+# Examining non response/missing values 
+mean(is.na(data))
+```
+```{r}
+# turns coded missing values to NA
+data[data== -1 | data == -2 ] <- NA
+data[2:4][data[2:4] ==2 ] <- 0
+data[6:7][data[6:7] ==2 ] <- 0
+data$APPLFEEU[data$APPLFEEU=="."] <- NA
+data$APPLFEEU <- as.integer(data$APPLFEEU)
+head(data) 
+```
+
+```{r}
+#  removing collinear and identity column
+new_data <- subset(data, select=-c(UNITID, DSTNUGC,CREDITS4,STUSRV9,LIBRES1,LIBRES9,DSTNUGN))
+summary(new_data, na.rm=TRUE)
+```
+
+```{r}
+# human-readable data
+plot_data <- select(new_data, grad_rate, APPLFEEU, everything())
+plot_data[3:21][plot_data[3:21] ==1 | plot_data[3:21] == "1"] <- "Yes"
+plot_data[3:21][plot_data[3:21] ==0 | plot_data[3:21] == "0"] <- "No"
+plot_data
+```
+
+```{r,echo=FALSE}
+# Checking for missing values
+data2 <- data
+data2$zip <- rownames(data2)
+data_long <- gather(data2, variable, value, -zip)
+
+qplot(zip, variable, data = data_long, geom= "tile", 
+      fill = is.na(value)) + 
+  scale_fill_manual("missing?" , values = c('TRUE'="black", 'FALSE' = "white")) + 
+  theme (axis.text.x = element_text(angle=90))
+```
+
+```{r,include=FALSE}
+# removing student services columns for reduced model 1
+no_credits <- subset(new_data, select = -c(CREDITS1,CREDITS2,CREDITS3))
+no_credits
+```
+
+```{r,include=FALSE}
+# removing student services columns for reduced model 1
+no_stuserv <- subset(new_data, select = -c(STUSRV1,STUSRV2,STUSRV3, STUSRV4, STUSRV8))
+no_stuserv
+```
+
+```{r,include=FALSE}
+# removing library resources columns for reduced model 2
+no_libre <- subset(new_data, select = -c(LIBRES2, LIBRES3, LIBRES4,LIBRES5,LIBRES6))
+no_libre
+```
+## Exploratory Data Analysis 
+
+```{r, echo=FALSE}
+ggplot(data=plot_data, aes(x=log(APPLFEEU), y=grad_rate)) + geom_point()+ labs(title="Graduation Rates by Application Fee") + xlab("log(Application Fee)") + ylab("Graduation Rate")
+```
+
+```{r, include=FALSE}
+boxplot(plot_data$grad_rate ~ plot_data$PT_UG, col= "lightblue", main= "Difference in Graduation rate \n by enrollment status", xlab="Part-time Enrollment Status", ylab = "Undergraduate Grad Rate") 
+```
+
+```{r, echo =FALSE}
+boxplot(plot_data$grad_rate ~ plot_data$TUITPL, col= "slategrey", main= "Graduation rate by Alternative \n Tuition Payment Plan ", xlab="Tuition Plan Access", ylab = "Undergraduate Grad Rate")
+```
+
+```{r, echo=TRUE}
+boxplot(plot_data$grad_rate ~ plot_data$DSTNUGP, col= "darkorange", main= "Variation between In-Person and \n  Distanced Education Graduation Rate ", xlab="Distanced Education Programs", ylab = "Undergraduate Grad Rate")
+```
+
+```{r, echo=FALSE}
+boxplot(plot_data$grad_rate ~ plot_data$ATHASSOC, col= "lightgray", main= "Graduation rate by National \n Athletic Association Membership", xlab="Member of Athletic Association", ylab = "Undergraduate Grad Rate")
+```
+
+```{r}
+# Distribution of Undergraduate 4 year grad rate
+ggplot(data=new_data, mapping = aes(x=grad_rate))+ geom_freqpoly(binwidth=5) + labs(title="US College/University Graduation rate(2020 IPEDS)")
+```
+
+```{r, echo=FALSE}
+cor(new_data, use="p")
+```
+
+```{r, echo=FALSE}
+# correlation plot of variables of interest 
+ggcorrplot(cor(new_data, use="p"), 
+           colors = c("white","#EE5921","white"))
+```
+
+## Technical summary
+Multivariate regression is used to explore the relationship between institutional characteristics and four year undergraduate graduation rate for degree or certificate-granting US colleges or University. The variables or characteristics of interest are student services, enrollment status, accelerated program, open admission, library resources, tuition plans, varied tuition rate for in or out-of state students, application fee, and member of National Athletic association. Comparison of the full model $$ \mu(grad\_rate|STUSERV,PT\_UG) = \beta_0 + \beta_1{STUSERV} + \beta_2{PT\_UG} + \beta_3{CREDITS} + \beta_4{OPENADMP} + \beta_5{LIBRE} + \beta_6{TUITPL} + \beta_7{TUITVARY} + \beta_8{APPLFEEU}_i + \beta9{ATHASSOC} + \epsilon_i $$ to reduced models without accelerated program, student services, and library resources variables suggest that the full model is more appropriate(Extra Sum of Squared Test, p-value = < 2.2e-16,5.99e-07, and 1.49e-09 respectively). Residual plot does not indicate violations of linearity, normality and constant variance. Review of the data collection design and methods does not suggest independence violations. There is convincing evidence that there is an association between institutional characteristics of interest except access to tuition plans on undergraduate graduation rate(see table below). There is convincing evidence of a positive association between undergraduate application fee, student services(academic/career counseling and employment services for student), library resources(established library hours and access to shared institutional library contents),national athlete membership, dual enrollment credits, and student resource(employment services for student and placement services for completer) on undergraduate four graduation rates for institution of the same characteristics(p-value listed below). There is convincing evidence of a negative correlation between part-time enrollment status, open enrollment ,varied tuition rates, student services(remedial, academic and counseling), and credit for life experiences(p-value listed below)Although this study is exploratory in nature, future studies with advanced statistical tools such as structural equational modeling (SEM) can be explored for possible causal relationships. 
+
+```{r, comment=NA}
+tab <- matrix(c("46.15","<2e-16","-8.506","8.34e-10", "-5.83", "1.90e-15", "-0.144", "<2e-16", "-10.86", "<2e-16", "2.64", "0.0002", "-9.724" ,"<2e-16","-5.51", "0.033", "4.54", "1.04e-05", "5.634", "5.77e-13", "6.62", "7.43e-05", "4.16", "0.00096", "-3.42", "1.0e-07", "2.33", "0.062", "-3.73" , "6.82e-09"), ncol=2, byrow=TRUE)
+colnames(tab) <- c("Estimate", "P-value")
+rownames(tab) <- c("Intercept", "PT_UG", "OPENADMP", "APPLFEEU", "TUITVARY", "ATHASSOC", "STUSRV1", "STUSRV2", "STUSRV3", "STUSRV4", "LIBRES5", "LIBRES6", "CREDITS2", "CREDITS3", "DSTNUGP")
+df_table <- as.table(tab)
+df_table
+```
+
+
+### Appendix
+
+**Model**
+$$
+\mu(grad\_rate | STUSERV, PT\_UG,...) = \beta_0 + \beta_1{STUSERV} + \beta_2{PT_UG} + \beta_3{CREDITS} + \beta_4{OPENADMP} + \beta_5{LIBRE} + \beta_6{TUITPL} + \beta_7{TUITVARY} + \beta_8{APPLFEEU} + \beta_9{ATHASSOC} + \epsilon_i
+$$
+
+**Model 2:** 
+$$
+\mu({grad\_rate|STUSERV, PT\_UG,...}) = \beta_0 + \beta_1{PT\_UG} + \beta_1{STUSERV}  + \beta_2{OPENADMP} + \beta_3{LIBRE}
+\beta_4{TUITPL} + \beta_5{TUITVARY} + \beta_6{APPLFEEU}_i + \beta{7ATHASSOC} + \epsilon_i
+$$
+
+**Model 3:** 
+$$
+\mu({grad\_rate|STUSERV, PT\_UG,...}) = \beta_0  + \beta_1{CREDITS} + \beta_3{OPENADMP} + \beta_3{LIBRE} + 
+\beta_4{TUITPL} + \beta_5{TUITVARY} + \beta_6{APPLFEEU}_i + \beta7{ATHASSOC} + \epsilon_i
+$$
+**Model 4:** 
+$$
+\mu({grad\_rate|STUSERV, PT\_UG,...}) = \beta_0 + \beta_1{STUSERV} + \beta_2{CREDITS} + \beta_3{OPENADMP} + 
+\beta_4{TUITPL} + \beta_5{TUITVARY} + \beta_6{APPLFEEU}_i + \beta7{ATHASSOC} + \epsilon_i
+$$
+
+```{r}
+# Fitting full model
+fit <- lm(data = new_data, grad_rate ~ ., na.action = "na.exclude")
+summary(fit)
+```
+```{r}
+# confidence interval of coefficient estimates using full model
+confint(fit)
+```
+
+```{r} 
+# fitting reduced model without student services variable 
+red_fit1 <- lm(data = no_credits, grad_rate ~ ., na.action = "na.exclude")
+summary(red_fit1)
+```
+
+```{r} 
+# fitting reduced model without student services variable 
+red_fit2 <- lm(data = no_stuserv, grad_rate ~ ., na.action = "na.exclude")
+summary(red_fit2)
+```
+
+```{r}
+#fitting reduced model without library resources variable
+red_fit3 <- lm(data = no_libre, grad_rate ~ ., na.action = "na.exclude")
+summary(red_fit3)
+```
+
+
+```{r}
+# significant evidence for full model with credits variables  
+anova(red_fit1, fit)
+```
+
+```{r}
+# significant evidence for full model with stuserv variables  
+anova(red_fit2, fit)
+```
+
+```{r}
+# significant evidence for full model with libre variables
+anova(red_fit3, fit)
+```
+
+```{r}
+# examining multicollinearity of explanatory variables 
+corr <- vif(fit)
+barplot(corr, main = "VIF Values", horiz= TRUE, col = "blue")
+abline(v=2, lwd=3, lty=2)
+```
+
+```{r}
+# residual plots of fitted values
+fit_diag <- broom::augment(fit, data = new_data)
+qplot(.fitted, .resid, data = fit_diag) + geom_hline(aes(yintercept=0))
+qplot(APPLFEEU, .resid, data = fit_diag) + geom_hline(aes(yintercept=0))
+```
+
+```{r}
+# examining possible outliers with leverage and cooks D values
+qplot(1:4194, .hat, data = fit_diag)
+qplot(1:4194, .cooksd, data = fit_diag)
+```
+
+ 
+
